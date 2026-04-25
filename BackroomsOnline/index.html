@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Backrooms Online</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-root">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Start menu -->
+    <div id="menu" class="overlay">
+      <h1>BACKROOMS ONLINE</h1>
+      <p class="subtitle">v0.2 — Quota Run</p>
+      <div class="menu-buttons">
+        <button data-action="singleplayer">New Game (Singleplayer)</button>
+        <button data-action="host">Create Room (Host)</button>
+        <button data-action="join">Join Room</button>
+      </div>
+      <div id="room-code-box" class="hidden">
+        <p id="room-code-label"></p>
+        <div id="room-code-display" class="code-display">
+          <code id="room-code-text"></code>
+          <button id="room-code-copy">Copy</button>
+        </div>
+        <input id="room-code-input" placeholder="room code" />
+        <button id="room-code-go">Connect</button>
+      </div>
+      <p class="hint">WASD — move · Space — jump · Ctrl — crouch · Shift — sprint · F — flashlight · E — interact · Q — drop · R — use · 1-0 — slots · V — начать/голосовать · T — голос (PTT) · Esc — пауза · ` — dev</p>
+    </div>
+
+    <!-- Pause -->
+    <div id="pause" class="overlay hidden">
+      <h2>PAUSED</h2>
+      <div class="menu-buttons">
+        <button data-action="resume">Resume</button>
+        <button data-action="main-menu">Main Menu</button>
+      </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+      <div class="hud-top-left">
+        <div class="bar"><label>SAN</label><div class="bar-track"><div id="san-fill" class="bar-fill san"></div></div><span id="san-text">100</span></div>
+        <div class="bar small"><label>BAT</label><div class="bar-track"><div id="bat-fill" class="bar-fill bat"></div></div><span id="bat-text">100</span></div>
+      </div>
+      <div class="hud-top-right">
+        <div id="quota-display">QUOTA  0 / 80</div>
+        <div id="online">Online: 1/1</div>
+      </div>
+      <div id="level-name" class="hidden"></div>
+      <div id="danger-display" class="hidden"></div>
+      <div id="crosshair"></div>
+      <div id="prompt" class="hidden"></div>
+
+      <div id="inventory">
+        <div class="inv-row">
+          <div class="slot" data-slot="0"><span class="slot-key">1</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="1"><span class="slot-key">2</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="2"><span class="slot-key">3</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="3"><span class="slot-key">4</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="4"><span class="slot-key">5</span><span class="slot-name">—</span></div>
+        </div>
+        <div class="inv-row">
+          <div class="slot" data-slot="5"><span class="slot-key">6</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="6"><span class="slot-key">7</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="7"><span class="slot-key">8</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="8"><span class="slot-key">9</span><span class="slot-name">—</span></div>
+          <div class="slot" data-slot="9"><span class="slot-key">0</span><span class="slot-name">—</span></div>
+        </div>
+      </div>
+
+      <div id="zone-counter" class="hidden"></div>
+      <div id="elevator-compass" class="hidden"></div>
+      <div id="vignette"></div>
+      <div id="ca-fringe"></div>
+      <div id="corner-vignette"></div>
+      <div id="grain"></div>
+      <div id="scanlines"></div>
+      <div id="voice-indicator" class="hidden">[ MIC ]</div>
+      <div id="chat-log"></div>
+
+      <!-- Dev Mode panel -->
+      <div id="dev-toggle" class="dev-toggle-btn">DEV  <span style="opacity:0.6;font-size:10px">[ ` ]</span></div>
+      <div id="dev-panel" class="dev-panel hidden">
+        <div class="dev-title">⚙ DEV  ↑↓ navigate · Enter toggle</div>
+      </div>
+    </div>
+
+    <!-- End screen -->
+    <div id="end-screen" class="overlay hidden">
+      <h2 id="end-title"></h2>
+      <p id="end-text"></p>
+      <div class="menu-buttons" style="max-width:240px">
+        <button data-action="main-menu">Return to Menu</button>
+      </div>
+    </div>
+
+    <!-- Death screen (kept for future use) -->
+    <div id="death" class="overlay hidden">
+      <h2>[DEAD]</h2>
+      <p id="death-text">You died on Level 0</p>
+      <p id="death-timer">Respawning in 5…</p>
+      <button data-action="respawn">Respawn now</button>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

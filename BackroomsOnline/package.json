@@ -1,0 +1,48 @@
+{
+  "name": "backrooms-online",
+  "version": "0.2.0",
+  "description": "Backrooms Online — multiplayer browser game wrapped in Electron",
+  "main": "electron/main.cjs",
+  "author": "barin",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.barin.backrooms-online",
+    "productName": "Backrooms Online",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "index.html",
+      "style.css",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Backrooms Online"
+    },
+    "portable": {
+      "artifactName": "BackroomsOnline-Portable-${version}.exe"
+    }
+  }
+}
