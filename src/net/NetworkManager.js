@@ -12,17 +12,20 @@ export class NetworkManager {
     this._ws            = null;
     this._serverUrl     = 'ws://localhost:3000';
     this.isHost         = false;
-    this.id             = null;         // 4-digit room code
-    this.conns          = new Map();    // peerId -> true
+    this.id             = null;          // 4-digit room code
+    this.conns          = new Map();     // peerId -> true
     this._onRemote      = () => {};
     this._onLeft        = () => {};
     this._tickTimer     = 0;
     this._stateHz       = 20;
     this._worldSeed     = null;
     this._seedResolver  = null;
+    this._seedRejecter  = null;
     this._onLevelSeed   = null;
     this._hostedResolve = null;
-    this.voice          = null;         // voice disabled in server mode
+    this._joinedResolve = null;
+    this._joinedReject  = null;
+    this.voice          = null;          // voice disabled in server mode
   }
 
   setServerUrl(url) { this._serverUrl = url.trim() || 'ws://localhost:3000'; }
@@ -33,8 +36,9 @@ export class NetworkManager {
     if (this._worldSeed != null) return Promise.resolve(this._worldSeed);
     return new Promise((resolve, reject) => {
       this._seedResolver = resolve;
+      this._seedRejecter = reject;
       setTimeout(
-        () => reject(new Error('Тайм-аут — сервер не ответил или комната не найдена')),
+        () => reject(new Error('Тайм-аут — хост не прислал данные. Убедитесь, что хост в игре.')),
         SEED_TIMEOUT_MS,
       );
     });
@@ -44,7 +48,7 @@ export class NetworkManager {
   onPeerLeft(fn)    { this._onLeft   = fn; }
   onLevelSeed(fn)   { this._onLevelSeed = fn; }
 
-  // ── host: create room, returns room code ──────────────────
+  // ── host: create room, returns room code ─────────────────
   async host() {
     await this._connect();
     this.isHost = true;
@@ -54,11 +58,16 @@ export class NetworkManager {
     });
   }
 
-  // ── join: enter existing room ─────────────────────────────
+  // ── join: enter existing room — rejects immediately on error ──
   async join(code) {
     await this._connect();
     this.isHost = false;
     this._send({ type: 'join', id: _selfId, code: String(code).trim() });
+    // wait for 'joined' confirmation or 'error' from server
+    return new Promise((resolve, reject) => {
+      this._joinedResolve = resolve;
+      this._joinedReject  = reject;
+    });
   }
 
   // ── open WebSocket connection ─────────────────────────────
@@ -77,7 +86,7 @@ export class NetworkManager {
         resolve();
       });
       ws.addEventListener('error', () => {
-        reject(new Error(`Не удалось подключиться к серверу ${this._serverUrl}`));
+        reject(new Error(`Не удалось подключиться к серверу: ${this._serverUrl}`));
       });
       ws.addEventListener('message', (evt) => {
         try { this._onMessage(JSON.parse(evt.data)); } catch (_) {}
@@ -99,17 +108,21 @@ export class NetworkManager {
       case 'hosted':
         this.id = msg.code;
         this._hostedResolve?.(msg.code);
+        this._hostedResolve = null;
         break;
 
       case 'joined':
         this.id = msg.code;
+        this._joinedResolve?.();
+        this._joinedResolve = null;
+        this._joinedReject  = null;
         break;
 
       case 'peer_joined': {
         const pid = msg.id;
         this.conns.set(pid, true);
-        // If we're host and already have a seed, share it with all peers
-        // (server relays to everyone in room; other peers ignore a duplicate seed)
+        // Host sends seed to everyone in room when a new peer joins.
+        // Server relays it to all other peers (existing peers ignore duplicates).
         if (this.isHost && this._worldSeed != null) {
           this._send({ type: 'seed', seed: this._worldSeed });
         }
@@ -134,9 +147,12 @@ export class NetworkManager {
         break;
 
       case 'seed':
-        if (this._worldSeed == null || !this.isHost) {
+        // Only accept seed if we don't have one yet (and we're not the host)
+        if (this._worldSeed == null) {
           this._worldSeed = msg.seed;
           this._seedResolver?.(msg.seed);
+          this._seedResolver = null;
+          this._seedRejecter = null;
         }
         break;
 
@@ -144,14 +160,31 @@ export class NetworkManager {
         this._onLevelSeed?.(msg.seed);
         break;
 
-      case 'error':
-        bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Ошибка сервера: ${msg.text}` });
+      case 'error': {
+        const errText = msg.text ?? 'Неизвестная ошибка сервера';
+        // Reject pending join/seed promises immediately instead of waiting for timeout
+        this._joinedReject?.(new Error(errText));
+        this._joinedReject  = null;
+        this._joinedResolve = null;
+        this._seedRejecter?.(new Error(errText));
+        this._seedRejecter  = null;
+        this._seedResolver  = null;
+        bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Ошибка: ${errText}` });
         break;
+      }
     }
   }
 
   _onDisconnect() {
     if (!this._ws) return; // intentional close — skip warning
+    // Fail any pending promises
+    const err = new Error('Соединение с сервером потеряно');
+    this._joinedReject?.(err);
+    this._seedRejecter?.(err);
+    this._joinedReject  = null;
+    this._joinedResolve = null;
+    this._seedRejecter  = null;
+    this._seedResolver  = null;
     bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: 'Потеряно соединение с сервером.' });
   }
 
@@ -177,10 +210,15 @@ export class NetworkManager {
   // ── cleanup ───────────────────────────────────────────────
   close() {
     const ws    = this._ws;
-    this._ws    = null;   // flag as intentional so _onDisconnect stays quiet
+    this._ws    = null;   // mark as intentional so _onDisconnect stays quiet
     this.id     = null;
     this.isHost = false;
     this.conns.clear();
+    this._hostedResolve = null;
+    this._joinedResolve = null;
+    this._joinedReject  = null;
+    this._seedResolver  = null;
+    this._seedRejecter  = null;
     try { ws?.close(); } catch (_) {}
   }
 }

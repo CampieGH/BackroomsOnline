@@ -3,13 +3,13 @@
 //  Запуск:   npm run server
 //  Стоп:     Ctrl + C
 // ============================================================
-//  Игроки подключаются по адресу ws://<IP-этого-ПК>:3000
-//  (или ws://localhost:3000 если все на одном компе)
-// ============================================================
 
 const { WebSocketServer } = require('ws');
 const os  = require('os');
-const PORT = process.env.PORT || 3000;
+
+const PORT          = process.env.PORT || 3000;
+const MAX_MSG_BYTES = 4096;   // максимальный размер одного сообщения
+const MAX_ROOM_SIZE = 8;      // максимум игроков в комнате
 
 // rooms: code (string) -> { peers: Map<peerId, ws> }
 const rooms = new Map();
@@ -24,6 +24,10 @@ function broadcast(room, msg, exceptId = null) {
       ws.send(json);
     }
   }
+}
+
+function send(ws, msg) {
+  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
 function gen4() {
@@ -65,53 +69,81 @@ console.log('');
 
 // ── connection handler ─────────────────────────────────────
 wss.on('connection', (ws) => {
-  let peerId   = null;
-  let roomCode = null;
+  let peerId   = null;   // UUID, устанавливается один раз при host/join
+  let roomCode = null;   // устанавливается один раз при host/join
 
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-
-    // ── host: create a new room ──────────────────────────
-    if (msg.type === 'host') {
-      peerId   = msg.id;
-      roomCode = gen4();
-      // ensure uniqueness
-      while (rooms.has(roomCode)) roomCode = gen4();
-      rooms.set(roomCode, { peers: new Map([[peerId, ws]]) });
-      console.log(`[Room ${roomCode}] Создана игроком ${peerId.slice(0, 6)}`);
-      ws.send(JSON.stringify({ type: 'hosted', code: roomCode }));
+  ws.on('message', (raw, isBinary) => {
+    // ── защита: только текст, лимит размера ─────────────
+    if (isBinary) return;
+    if (raw.length > MAX_MSG_BYTES) {
+      console.warn(`[!] Слишком большое сообщение (${raw.length} bytes), сброс`);
       return;
     }
 
-    // ── join: enter existing room ────────────────────────
-    if (msg.type === 'join') {
-      peerId   = msg.id;
-      roomCode = msg.code;
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (typeof msg !== 'object' || msg === null) return;
+
+    const type = msg.type;
+
+    // ── уже в комнате — игнорируем повторный host/join ──
+    if (peerId !== null) {
+      if (type === 'host' || type === 'join') return;
+      // relay всего остального
       const room = rooms.get(roomCode);
+      if (!room) return;
+      msg.from = peerId;   // server задаёт отправителя, клиент не может подделать
+      broadcast(room, msg, peerId);
+      return;
+    }
+
+    // ── host: создать комнату ────────────────────────────
+    if (type === 'host') {
+      const clientId = String(msg.id ?? '').slice(0, 64);
+      if (!clientId) return;
+
+      peerId   = clientId;
+      roomCode = gen4();
+      while (rooms.has(roomCode)) roomCode = gen4();
+
+      rooms.set(roomCode, { peers: new Map([[peerId, ws]]) });
+      console.log(`[Room ${roomCode}] Создана игроком ${peerId.slice(0, 6)}`);
+      send(ws, { type: 'hosted', code: roomCode });
+      return;
+    }
+
+    // ── join: войти в комнату ────────────────────────────
+    if (type === 'join') {
+      const clientId = String(msg.id   ?? '').slice(0, 64);
+      const code     = String(msg.code ?? '').trim();
+      if (!clientId || !code) return;
+
+      const room = rooms.get(code);
       if (!room) {
-        ws.send(JSON.stringify({ type: 'error', text: `Комната ${roomCode} не найдена` }));
+        send(ws, { type: 'error', text: `Комната ${code} не найдена` });
         return;
       }
-      // tell every existing peer about the newcomer
+      if (room.peers.size >= MAX_ROOM_SIZE) {
+        send(ws, { type: 'error', text: `Комната заполнена (макс. ${MAX_ROOM_SIZE})` });
+        return;
+      }
+
+      peerId   = clientId;
+      roomCode = code;
+
+      // сообщить существующим пирам о новом игроке
       broadcast(room, { type: 'peer_joined', id: peerId });
-      // tell newcomer about every existing peer
+      // сообщить новому игроку о каждом существующем
       for (const [pid] of room.peers) {
-        ws.send(JSON.stringify({ type: 'peer_joined', id: pid }));
+        send(ws, { type: 'peer_joined', id: pid });
       }
       room.peers.set(peerId, ws);
-      ws.send(JSON.stringify({ type: 'joined', code: roomCode }));
+      send(ws, { type: 'joined', code: roomCode });
       console.log(`[Room ${roomCode}] ${peerId.slice(0, 6)} подключился (${room.peers.size} игр.)`);
       return;
     }
 
-    // ── relay everything else to all room members ────────
-    if (roomCode && peerId) {
-      const room = rooms.get(roomCode);
-      if (!room) return;
-      msg.from = peerId;
-      broadcast(room, msg, peerId);
-    }
+    // неизвестное сообщение до регистрации — игнорируем
   });
 
   ws.on('close', () => {
