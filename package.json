@@ -8,9 +8,13 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "server": "node server.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:portable": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "electron": "^31.0.0",

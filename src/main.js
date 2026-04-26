@@ -61,6 +61,7 @@ bus.on(EVT.GAME_START, async (payload = { mode: 'singleplayer' }) => {
   if (payload.mode === 'host' || payload.mode === 'join') {
     try {
       network = new NetworkManager();
+      if (payload.serverUrl) network.setServerUrl(payload.serverUrl);
       network.onRemoteState(handleRemoteState);
       network.onPeerLeft(handlePeerLeft);
       network.onLevelSeed((seed) => {
