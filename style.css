@@ -127,6 +127,23 @@ html, body {
 }
 #inventory .slot.active { border-color: #ffc857; box-shadow: 0 0 8px rgba(255,200,87,0.5); }
 
+/* Server URL input */
+#server-url-box {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 4px;
+}
+.server-url-label {
+  font-size: 11px; color: #666; letter-spacing: 1px; text-transform: uppercase;
+}
+#server-url-input {
+  background: #0d0d0d; border: 1px solid #333; color: #888;
+  padding: 6px 12px; font-family: inherit; font-size: 13px; width: 280px;
+  border-radius: 2px; text-align: center;
+  transition: border-color 0.15s, color 0.15s;
+}
+#server-url-input:focus {
+  outline: none; border-color: #ffc857; color: #e0e0e0;
+}
+
 #room-code-box {
   display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 12px;
   padding: 16px; background: rgba(30,20,5,0.8); border: 1px solid #5a4820; border-radius: 4px;

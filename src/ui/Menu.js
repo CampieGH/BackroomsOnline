@@ -13,6 +13,7 @@ export class Menu {
     this.codeCopy = document.getElementById('room-code-copy');
     this.codeInput = document.getElementById('room-code-input');
     this.codeGo = document.getElementById('room-code-go');
+    this.serverUrlInput = document.getElementById('server-url-input');
 
     this.main.querySelectorAll('button[data-action]').forEach(btn => {
       btn.addEventListener('click', () => this._onMain(btn.dataset.action));
@@ -22,13 +23,17 @@ export class Menu {
     });
     this.codeGo.addEventListener('click', () => {
       const code = this.codeInput.value.trim();
-      if (code) bus.emit(EVT.GAME_START, { mode: 'join', code });
+      if (code) bus.emit(EVT.GAME_START, { mode: 'join', code, serverUrl: this._serverUrl() });
     });
     this.codeCopy.addEventListener('click', () => {
       navigator.clipboard.writeText(this.codeText.textContent).then(
         () => { this.codeCopy.textContent = 'Copied!'; setTimeout(() => { this.codeCopy.textContent = 'Copy'; }, 1500); }
       );
     });
+  }
+
+  _serverUrl() {
+    return this.serverUrlInput?.value?.trim() || 'ws://localhost:3000';
   }
 
   showCode(id) {
@@ -55,8 +60,9 @@ export class Menu {
   hidePause() { this.pause.classList.add('hidden'); }
 
   _onMain(action) {
+    const serverUrl = this._serverUrl();
     if (action === 'singleplayer') bus.emit(EVT.GAME_START, { mode: 'singleplayer' });
-    if (action === 'host')         bus.emit(EVT.GAME_START, { mode: 'host' });
+    if (action === 'host')         bus.emit(EVT.GAME_START, { mode: 'host', serverUrl });
     if (action === 'join')         this.askCode();
   }
 

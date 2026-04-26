@@ -1,57 +1,44 @@
-// Trystero mesh: every peer connects directly to every other peer.
-// Signaling via Nostr decentralized relays — no single server, works in Russia.
-// Loaded lazily via dynamic import so a CDN hiccup never breaks the game bootstrap.
+// Centralized WebSocket multiplayer — connects to server.js running on host's PC.
+// Drop-in replacement for the old Trystero P2P NetworkManager.
 
 import { makeStateMsg } from './Protocol.js';
-import { bus, EVT } from '../core/EventBus.js';
+import { bus, EVT }     from '../core/EventBus.js';
 
-const APP_ID  = 'backrooms-online-v1';
-const SEED_TIMEOUT_MS = 15000;
-
-// Unique ID for this session — used as the "sender" field in state packets.
+const SEED_TIMEOUT_MS = 20000;
 const _selfId = crypto.randomUUID();
-
-let _joinRoom = null;
-
-async function ensureTrystero() {
-  if (_joinRoom) return;
-  const mod = await import('https://esm.sh/trystero/nostr');
-  _joinRoom = mod.joinRoom;
-}
-
-function gen4() {
-  return String(1000 + Math.floor(Math.random() * 9000));
-}
 
 export class NetworkManager {
   constructor() {
-    this.room     = null;
-    this.isHost   = false;
-    this.id       = null;         // room code shown to users
-    this.conns    = new Map();    // peerId -> true
-    this._onRemote    = () => {};
-    this._onLeft      = () => {};
-    this._tickTimer   = 0;
-    this._stateHz     = 20;
-    this._worldSeed   = null;
-    this._seedResolver = null;
-    this._sendState   = null;
-    this._sendChat    = null;
-    this._sendSeed    = null;
-    this._sendLevel   = null;
-    this._onLevelSeed = null;
-    this.voice        = null;
+    this._ws            = null;
+    this._serverUrl     = 'ws://localhost:3000';
+    this.isHost         = false;
+    this.id             = null;          // 4-digit room code
+    this.conns          = new Map();     // peerId -> true
+    this._onRemote      = () => {};
+    this._onLeft        = () => {};
+    this._tickTimer     = 0;
+    this._stateHz       = 20;
+    this._worldSeed     = null;
+    this._seedResolver  = null;
+    this._seedRejecter  = null;
+    this._onLevelSeed   = null;
+    this._hostedResolve = null;
+    this._joinedResolve = null;
+    this._joinedReject  = null;
+    this.voice          = null;          // voice disabled in server mode
   }
 
+  setServerUrl(url) { this._serverUrl = url.trim() || 'ws://localhost:3000'; }
   setWorldSeed(seed) { this._worldSeed = seed; }
 
-  // Resolves immediately if seed already known, otherwise waits with timeout.
+  // Resolves with seed once received from host (or immediately if already known).
   waitForSeed() {
     if (this._worldSeed != null) return Promise.resolve(this._worldSeed);
     return new Promise((resolve, reject) => {
       this._seedResolver = resolve;
+      this._seedRejecter = reject;
       setTimeout(
-        () => reject(new Error('Тайм-аут — комната не найдена или хост недоступен')),
+        () => reject(new Error('Тайм-аут — хост не прислал данные. Убедитесь, что хост в игре.')),
         SEED_TIMEOUT_MS,
       );
     });
@@ -59,111 +46,179 @@ export class NetworkManager {
 
   onRemoteState(fn) { this._onRemote = fn; }
   onPeerLeft(fn)    { this._onLeft   = fn; }
+  onLevelSeed(fn)   { this._onLevelSeed = fn; }
 
-  // --- host ---------------------------------------------------------------
+  // ── host: create room, returns room code ─────────────────
   async host() {
-    await ensureTrystero();
+    await this._connect();
     this.isHost = true;
-    const code  = gen4();
-    this.id     = code;
-    this._setupRoom(code);
-    return code;
+    this._send({ type: 'host', id: _selfId });
+    return new Promise((resolve) => {
+      this._hostedResolve = resolve;
+    });
   }
 
-  // --- client -------------------------------------------------------------
+  // ── join: enter existing room — rejects immediately on error ──
   async join(code) {
-    await ensureTrystero();
+    await this._connect();
     this.isHost = false;
-    this.id     = code;
-    this._setupRoom(code);
+    this._send({ type: 'join', id: _selfId, code: String(code).trim() });
+    // wait for 'joined' confirmation or 'error' from server
+    return new Promise((resolve, reject) => {
+      this._joinedResolve = resolve;
+      this._joinedReject  = reject;
+    });
   }
 
-  // --- shared setup -------------------------------------------------------
-  _setupRoom(code) {
-    this.room = _joinRoom({ appId: APP_ID }, code);
-
-    const [sendState, onState] = this.room.makeAction('state');
-    const [sendChat,  onChat]  = this.room.makeAction('chat');
-    const [sendSeed,  onSeed]  = this.room.makeAction('seed');
-    const [sendLevel, onLevel] = this.room.makeAction('level');
-
-    this._sendState = sendState;
-    this._sendChat  = sendChat;
-    this._sendSeed  = sendSeed;
-    this._sendLevel = sendLevel;
-
-    this.room.onPeerJoin(peerId => {
-      this.conns.set(peerId, true);
-      // Send world seed so the new peer builds the same maze.
-      if (this.isHost && this._worldSeed != null) {
-        sendSeed(this._worldSeed, peerId);
+  // ── open WebSocket connection ─────────────────────────────
+  _connect() {
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let ws;
+      try {
+        ws = new WebSocket(this._serverUrl);
+      } catch (e) {
+        reject(new Error(`Неверный адрес сервера: ${this._serverUrl}`));
+        return;
       }
-      bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Player joined: ${peerId.slice(0, 6)}` });
-    });
-
-    this.room.onPeerLeave(peerId => {
-      this.conns.delete(peerId);
-      this._onLeft(peerId);
-      bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Player left: ${peerId.slice(0, 6)}` });
-    });
-
-    // Trystero gives sender's peerId in callbacks — use it as the map key.
-    onState((data, peerId) => {
-      data.id = peerId;
-      this._onRemote(peerId, data);
-    });
-
-    onChat((data) => {
-      bus.emit(EVT.CHAT_MESSAGE, { text: data.text });
-    });
-
-    onSeed((seed) => {
-      this._worldSeed = seed;
-      this._seedResolver?.(seed);
-    });
-
-    onLevel((data) => {
-      this._onLevelSeed?.(data.seed);
+      ws.addEventListener('open', () => {
+        this._ws = ws;
+        resolve();
+      });
+      ws.addEventListener('error', () => {
+        reject(new Error(`Не удалось подключиться к серверу: ${this._serverUrl}`));
+      });
+      ws.addEventListener('message', (evt) => {
+        try { this._onMessage(JSON.parse(evt.data)); } catch (_) {}
+      });
+      ws.addEventListener('close', () => this._onDisconnect());
     });
   }
 
-  // --- tick ---------------------------------------------------------------
+  _send(msg) {
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify(msg));
+    }
+  }
+
+  // ── incoming message handler ──────────────────────────────
+  _onMessage(msg) {
+    switch (msg.type) {
+
+      case 'hosted':
+        this.id = msg.code;
+        this._hostedResolve?.(msg.code);
+        this._hostedResolve = null;
+        break;
+
+      case 'joined':
+        this.id = msg.code;
+        this._joinedResolve?.();
+        this._joinedResolve = null;
+        this._joinedReject  = null;
+        break;
+
+      case 'peer_joined': {
+        const pid = msg.id;
+        this.conns.set(pid, true);
+        // Host sends seed to everyone in room when a new peer joins.
+        // Server relays it to all other peers (existing peers ignore duplicates).
+        if (this.isHost && this._worldSeed != null) {
+          this._send({ type: 'seed', seed: this._worldSeed });
+        }
+        bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Игрок подключился: ${pid.slice(0, 6)}` });
+        break;
+      }
+
+      case 'peer_left': {
+        const pid = msg.id;
+        this.conns.delete(pid);
+        this._onLeft(pid);
+        bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Игрок ушёл: ${pid.slice(0, 6)}` });
+        break;
+      }
+
+      case 'state':
+        if (msg.from) this._onRemote(msg.from, msg);
+        break;
+
+      case 'chat':
+        bus.emit(EVT.CHAT_MESSAGE, { text: msg.text });
+        break;
+
+      case 'seed':
+        // Only accept seed if we don't have one yet (and we're not the host)
+        if (this._worldSeed == null) {
+          this._worldSeed = msg.seed;
+          this._seedResolver?.(msg.seed);
+          this._seedResolver = null;
+          this._seedRejecter = null;
+        }
+        break;
+
+      case 'level':
+        this._onLevelSeed?.(msg.seed);
+        break;
+
+      case 'error': {
+        const errText = msg.text ?? 'Неизвестная ошибка сервера';
+        // Reject pending join/seed promises immediately instead of waiting for timeout
+        this._joinedReject?.(new Error(errText));
+        this._joinedReject  = null;
+        this._joinedResolve = null;
+        this._seedRejecter?.(new Error(errText));
+        this._seedRejecter  = null;
+        this._seedResolver  = null;
+        bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: `Ошибка: ${errText}` });
+        break;
+      }
+    }
+  }
+
+  _onDisconnect() {
+    if (!this._ws) return; // intentional close — skip warning
+    // Fail any pending promises
+    const err = new Error('Соединение с сервером потеряно');
+    this._joinedReject?.(err);
+    this._seedRejecter?.(err);
+    this._joinedReject  = null;
+    this._joinedResolve = null;
+    this._seedRejecter  = null;
+    this._seedResolver  = null;
+    bus.emit(EVT.CHAT_MESSAGE, { type: 'system', text: 'Потеряно соединение с сервером.' });
+  }
+
+  // ── game tick: send player state ──────────────────────────
   tick(dt, player, voted = false) {
-    if (!this.room || !player) return;
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN || !player) return;
     this._tickTimer += dt;
-    const period = 1 / this._stateHz;
-    if (this._tickTimer < period) return;
+    if (this._tickTimer < 1 / this._stateHz) return;
     this._tickTimer = 0;
-    this._sendState?.(makeStateMsg(_selfId, player, voted));
+    const msg = makeStateMsg(_selfId, player, voted);
+    msg.type = 'state';
+    this._send(msg);
   }
 
-  onLevelSeed(fn) { this._onLevelSeed = fn; }
-
-  // Host broadcasts new level seed to all peers after elevator transition.
+  // Host broadcasts next-level seed to all clients.
   broadcastLevel(seed) {
-    this._sendLevel?.({ seed });
+    this._send({ type: 'level', seed });
   }
 
-  // Initialize voice chat after room is set up.
-  async initVoice(remotes) {
-    if (!this.room) return null;
-    const { VoiceChat } = await import('./VoiceChat.js');
-    this.voice = new VoiceChat();
-    await this.voice.init(this.room, remotes);
-    return this.voice;
-  }
+  // Voice chat not available in server mode.
+  async initVoice() { return null; }
 
+  // ── cleanup ───────────────────────────────────────────────
   close() {
-    this.voice?.dispose();
-    this.voice = null;
-    try { this.room?.leave?.(); } catch (_) {}
-    this.room      = null;
-    this.id        = null;
-    this.isHost    = false;
+    const ws    = this._ws;
+    this._ws    = null;   // mark as intentional so _onDisconnect stays quiet
+    this.id     = null;
+    this.isHost = false;
     this.conns.clear();
-    this._sendState = null;
-    this._sendChat  = null;
-    this._sendSeed  = null;
-    this._sendLevel = null;
+    this._hostedResolve = null;
+    this._joinedResolve = null;
+    this._joinedReject  = null;
+    this._seedResolver  = null;
+    this._seedRejecter  = null;
+    try { ws?.close(); } catch (_) {}
   }
 }
